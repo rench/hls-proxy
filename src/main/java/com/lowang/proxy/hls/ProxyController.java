@@ -92,6 +92,16 @@ public class ProxyController {
   }
 
   @ResponseBody
+  @RequestMapping(value = "/ocqtv3.m3u8", produces = "application/vnd.apple.mpegurl")
+  public String ocqtv3(HttpServletRequest request, HttpServletResponse response) {
+    String content = getM3u8Data();
+    content = content.replaceAll("media", prefix.trim() + "media");
+    // content = content.replaceFirst("#EXT-X-KEY(.*)php\"\n", "");
+    // LOG.info("output :{}", content);
+    return content;
+  }
+
+  @ResponseBody
   @RequestMapping(value = "/cqtv3.m3u8", produces = "application/vnd.apple.mpegurl")
   public String cqtv3(HttpServletRequest request, HttpServletResponse response) {
     String content = getM3u8Data();
@@ -166,8 +176,9 @@ public class ProxyController {
       if (resp.getStatus() != 200) {
         return env.getProperty("cqtv3.m3u8", M3U8_URL);
       }
-      String content =
-          resp.body().replace("jQuery(\"", "").replace("\")", "").replaceAll("\\\\", "");
+      String content = resp.body();
+      LOG.info("orignal m3u8 :{}", content);
+      content = content.replaceAll(".*jQuery\\(\"", "").replace("\")", "").replaceAll("\\\\", "");
       LOG.info("get orignal m3u8 url:{}", content);
       m3u8Timestamp = System.currentTimeMillis();
       m3u8Url = content;
