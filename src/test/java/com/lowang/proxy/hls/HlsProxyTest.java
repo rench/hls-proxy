@@ -8,7 +8,7 @@ import cn.hutool.crypto.symmetric.AES;
 import cn.hutool.http.HttpUtil;
 
 public class HlsProxyTest {
-  public static void main1(String[] args) {
+  public static void main(String[] args) {
     final String aesDataUrl = "http://sjlivecdnx.cbg.cn/1ive/stream_3.php";
     byte[] bs =
         HttpUtil.createGet(aesDataUrl)
@@ -32,12 +32,12 @@ public class HlsProxyTest {
     }
     System.out.println(HexUtil.encodeHex(iv));
     AES aes = new AES("CBC", "PKCS7Padding", bs, iv);
-    byte[] data = FileUtil.readBytes("D://media-uhyiqgc82_235158.ts");
+    byte[] data = FileUtil.readBytes("D://media-uhyiqgc82_261237.ts");
     data = aes.decrypt(data);
-    FileUtil.writeBytes(data, "D://media-uhyiqgc82_235158_decode.ts");
+    FileUtil.writeBytes(data, "D://media-uhyiqgc82_261237_decode.ts");
   }
 
-  public static void main(String[] args) {
+  public static void main1(String[] args) {
     getTs("http://sjlivecdn.cbg.cn/201812260830/36c905f96837dfc439679a1f84ddcccc/app_2/_definst_/ls_3.stream/media-uhyiqgc82_241437.ts");
   }
   

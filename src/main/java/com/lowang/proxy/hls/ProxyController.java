@@ -1,7 +1,9 @@
 package com.lowang.proxy.hls;
 
+import java.io.OutputStream;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.util.Enumeration;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -20,6 +22,7 @@ import org.springframework.web.bind.annotation.ResponseBody;
 import cn.hutool.cache.Cache;
 import cn.hutool.cache.CacheUtil;
 import cn.hutool.core.util.HexUtil;
+import cn.hutool.core.util.StrUtil;
 import cn.hutool.crypto.symmetric.AES;
 import cn.hutool.http.HttpResponse;
 import cn.hutool.http.HttpUtil;
@@ -46,7 +49,7 @@ public class ProxyController {
   private long m3u8Timestamp = -1;
   private String m3u8Url = null;
 
-  private long timeout = 1000 * 60 * 1;
+  private long timeout = 1000 * 60 * 5;
 
   public static byte[] getKeyData() {
     if (keyData == null) {
@@ -92,10 +95,31 @@ public class ProxyController {
   }
 
   @ResponseBody
+  @RequestMapping(value = "/stream_3.php", produces = "binary/octet-stream")
+  public byte[] stream(HttpServletRequest request, HttpServletResponse response) {
+    Enumeration<String> headerNames = request.getHeaderNames();
+    while (headerNames.hasMoreElements()) {
+      String key = (String) headerNames.nextElement();
+      String value = request.getHeader(key);
+      LOG.info("stream_3.php:{}->{}", key, value);
+    }
+    LOG.info("stream_3.php:ip->{}", request.getRemoteAddr());
+    return getKeyData();
+  }
+
+  @ResponseBody
   @RequestMapping(value = "/ocqtv3.m3u8", produces = "application/vnd.apple.mpegurl")
   public String ocqtv3(HttpServletRequest request, HttpServletResponse response) {
+    Enumeration<String> headerNames = request.getHeaderNames();
+    while (headerNames.hasMoreElements()) {
+      String key = (String) headerNames.nextElement();
+      String value = request.getHeader(key);
+      // LOG.info("header:{}->{}", key, value);
+    }
     String content = getM3u8Data();
     content = content.replaceAll("media", prefix.trim() + "media");
+    content = content.replace("http://sjlivecdnx.cbg.cn/1ive/stream_3.php", "stream_3.php");
+    // content = content.replaceAll("media", "cqtv3/media");
     // content = content.replaceFirst("#EXT-X-KEY(.*)php\"\n", "");
     // LOG.info("output :{}", content);
     return content;
@@ -108,25 +132,29 @@ public class ProxyController {
     cacheTsData(content);
     content = content.replaceAll("media", "/cqtv3/media");
     content = content.replaceFirst("#EXT-X-KEY(.*)php\"\n", "");
+    content = content.replaceFirst("#EXT-X-ALLOW-CACHE:NO\n", "");
     // LOG.info("output :{}", content);
     return content;
   }
 
-  @RequestMapping(value = "/cqtv3/{file}", produces = "video/MP2T")
-  @ResponseBody
-  public byte[] cqtv3hls(@PathVariable(name = "file") final String file) {
+  @RequestMapping(value = "/cqtv3/{file}")
+  public void cqtv3hls(
+      @PathVariable(name = "file") final String file,
+      HttpServletRequest request,
+      HttpServletResponse response) {
+    Enumeration<String> headerNames = request.getHeaderNames();
+    while (headerNames.hasMoreElements()) {
+      String key = (String) headerNames.nextElement();
+      String value = request.getHeader(key);
+      // LOG.info("header:{}->{}", key, value);
+    }
+
     LOG.info("request file:{}", file);
     String ivStr = file.substring(file.indexOf("_") + 1, file.indexOf(".ts"));
-    LOG.info("request file:{}", ivStr);
-    byte[] iv = new byte[16];
-    char[] cs = ivStr.toCharArray();
-    for (int i = 0; i < cs.length; i++) {
-      iv[15 - i] = (byte) Integer.valueOf(cs[i] + "").intValue();
-    }
-    for (int i = 0; i < 16 - cs.length; i++) {
-      iv[i] = 0;
-    }
-    LOG.info("media iv:{}", new String(HexUtil.encodeHex(iv)));
+    ivStr = String.format("%032x", Integer.valueOf(ivStr));
+    ivStr = StrUtil.padPre(ivStr, 32, '0');
+    byte[] iv = HexUtil.decodeHex(ivStr);
+    LOG.info("media iv:{}", ivStr);
     byte[] key = getKeyData();
     LOG.info("media key:{}", new String(HexUtil.encodeHex(key)));
     AES aes = new AES("CBC", "PKCS7Padding", key, iv);
@@ -139,15 +167,27 @@ public class ProxyController {
     } else {
       LOG.info("media from cache:{}", file);
     }
-    if (data == null) return null;
+    if (data == null) return;
     try {
       data = aes.decrypt(data);
     } catch (Exception e) {
       LOG.error("decrypte error:{}", e);
-      return null;
     }
     LOG.info("decrypt success:{}", file);
-    return data;
+    try (OutputStream out = response.getOutputStream()) {
+      response.setHeader("Accept-Ranges", "bytes");
+      response.setContentLength(data.length);
+      response.setHeader("Connection", "keep-alive");
+      response.setContentType(" video/mpeg");
+      response.setHeader("Server", "FlashCom/3.5.7");
+      response.setHeader("Cache-Control", "max-age=360000");
+      out.write(data);
+      out.flush();
+    } catch (Exception e) {
+      LOG.error("write ts data error", e);
+    } finally {
+      LOG.info("write file success:{}", file);
+    }
   }
 
   public String getM3u8Data() {
