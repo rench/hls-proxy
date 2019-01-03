@@ -1,9 +1,10 @@
 package com.lowang.proxy.hls;
 
-import java.io.OutputStream;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.Enumeration;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -35,34 +36,38 @@ import cn.hutool.http.HttpUtil;
 @Controller("proxyController")
 public class ProxyController {
   private static final Logger LOG = LoggerFactory.getLogger(ProxyController.class);
+  private static final String USER_AGENT =
+      "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/72.0.3610.2 Safari/537.36";
   private static final String AES_KEY_URL = "http://sjlivecdnx.cbg.cn/1ive/stream_3.php";
-  private static final String M3U8_URL =
-      "http://sjlivecdn.cbg.cn/201812251521/3b3beea03376986e13844c819e25816c/app_2/_definst_/ls_3.stream/chunklist.m3u8";
-  private static final String TS_PREFIX =
-      "http://sjlivecdn.cbg.cn/201812251521/3b3beea03376986e13844c819e25816c/app_2/_definst_/ls_3.stream/";
   private static final String M3U8_MD5_URL =
       "http://app.cbg.cn/?app=activity&controller=wwsp&action=hlive_md5&callback=jQuery&ch=%2Fapp_2%2F_definst_%2Fls_3.stream%2Fchunklist.m3u8&_=";
   private static final Cache<String, byte[]> LFU_CACHE = CacheUtil.newFIFOCache(30);
   private static byte[] keyData = null;
-  @Autowired private Environment env;
   private String prefix;
   private long m3u8Timestamp = -1;
   private String m3u8Url = null;
-
   private long timeout = 1000 * 60 * 5;
+  private static final Map<String, String> LIVE_HEADER;
+  @Autowired private Environment env;
+
+  static {
+    LIVE_HEADER = new HashMap<>();
+    LIVE_HEADER.put("User-Agent", USER_AGENT);
+    LIVE_HEADER.put("Referer", "http://www.cbg.cn/1ive/");
+    LIVE_HEADER.put("X-Requested-With", "ShockwaveFlash/32.0.0.101");
+  }
 
   public static byte[] getKeyData() {
+
     if (keyData == null) {
       synchronized (ProxyController.class) {
-        byte[] bs =
-            HttpUtil.createGet(AES_KEY_URL)
-                .header("Referer", "http://www.cbg.cn/zbpd/")
-                .header(
-                    "User-Agent",
-                    "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/72.0.3610.2 Safari/537.36")
-                .header("X-Requested-With", "ShockwaveFlash/32.0.0.101")
-                .execute()
-                .bodyBytes();
+        byte[] bs = null;
+        HttpResponse resp = HttpUtil.createGet(AES_KEY_URL).addHeaders(LIVE_HEADER).execute();
+        if (resp.getStatus() != 200) {
+          LOG.warn("try to get stream key error -> {}", resp.body());
+          return new byte[] {};
+        }
+        bs = resp.bodyBytes();
         keyData = bs;
         return bs;
       }
@@ -79,7 +84,7 @@ public class ProxyController {
       if (!LFU_CACHE.containsKey(file)) {
         LOG.info("found a new media file:{}", file);
         final String tsDataUrl =
-            (prefix != null ? prefix : env.getProperty("cqtv3.ts-prefix", TS_PREFIX)) + file;
+            (prefix != null ? prefix : env.getProperty("cqtv3.ts-prefix", "")) + file;
         byte[] data = getTsData(tsDataUrl);
         LFU_CACHE.put(file, data);
 
@@ -110,17 +115,9 @@ public class ProxyController {
   @ResponseBody
   @RequestMapping(value = "/ocqtv3.m3u8", produces = "application/vnd.apple.mpegurl")
   public String ocqtv3(HttpServletRequest request, HttpServletResponse response) {
-    Enumeration<String> headerNames = request.getHeaderNames();
-    while (headerNames.hasMoreElements()) {
-      String key = (String) headerNames.nextElement();
-      String value = request.getHeader(key);
-      // LOG.info("header:{}->{}", key, value);
-    }
     String content = getM3u8Data();
     content = content.replaceAll("media", prefix.trim() + "media");
     content = content.replace("http://sjlivecdnx.cbg.cn/1ive/stream_3.php", "stream_3.php");
-    // content = content.replaceAll("media", "cqtv3/media");
-    // content = content.replaceFirst("#EXT-X-KEY(.*)php\"\n", "");
     // LOG.info("output :{}", content);
     return content;
   }
@@ -138,17 +135,11 @@ public class ProxyController {
   }
 
   @RequestMapping(value = "/cqtv3/{file}")
-  public void cqtv3hls(
+  @ResponseBody
+  public byte[] cqtv3hls(
       @PathVariable(name = "file") final String file,
       HttpServletRequest request,
       HttpServletResponse response) {
-    Enumeration<String> headerNames = request.getHeaderNames();
-    while (headerNames.hasMoreElements()) {
-      String key = (String) headerNames.nextElement();
-      String value = request.getHeader(key);
-      // LOG.info("header:{}->{}", key, value);
-    }
-
     LOG.info("request file:{}", file);
     String ivStr = file.substring(file.indexOf("_") + 1, file.indexOf(".ts"));
     ivStr = String.format("%032x", Integer.valueOf(ivStr));
@@ -161,60 +152,43 @@ public class ProxyController {
     byte[] data = LFU_CACHE.get(file);
     if (data == null) {
       final String tsDataUrl =
-          (prefix != null ? prefix : env.getProperty("cqtv3.ts-prefix", TS_PREFIX)) + file;
+          (prefix != null ? prefix : env.getProperty("cqtv3.ts-prefix", "")) + file;
       data = getTsData(tsDataUrl);
       LFU_CACHE.put(file, data);
     } else {
       LOG.info("media from cache:{}", file);
     }
-    if (data == null) return;
+    if (data == null) return null;
     try {
       data = aes.decrypt(data);
     } catch (Exception e) {
       LOG.error("decrypte error:{}", e);
     }
     LOG.info("decrypt success:{}", file);
-    try (OutputStream out = response.getOutputStream()) {
-      response.setHeader("Accept-Ranges", "bytes");
-      response.setContentLength(data.length);
-      response.setHeader("Connection", "keep-alive");
-      response.setContentType(" video/mpeg");
-      response.setHeader("Server", "FlashCom/3.5.7");
-      response.setHeader("Cache-Control", "max-age=360000");
-      out.write(data);
-      out.flush();
-    } catch (Exception e) {
-      LOG.error("write ts data error", e);
-    } finally {
-      LOG.info("write file success:{}", file);
-    }
+    response.setHeader("Accept-Ranges", "bytes");
+    response.setContentLength(data.length);
+    response.setHeader("Connection", "keep-alive");
+    response.setContentType(" video/mpeg");
+    response.setHeader("Server", "FlashCom/3.5.7");
+    response.setHeader("Cache-Control", "max-age=360000");
+    return data;
   }
 
   public String getM3u8Data() {
     final String m3u8Url = getMd5M3u8();
     prefix = m3u8Url.substring(0, m3u8Url.lastIndexOf("/") + 1);
     final String content =
-        HttpUtil.createGet(m3u8Url).header("Referer", "http://www.cbg.cn").execute().body();
+        HttpUtil.createGet(m3u8Url).addHeaders(LIVE_HEADER).disableCache().execute().body();
     return content;
   }
 
   public String getMd5M3u8() {
     if (m3u8Timestamp == -1 || System.currentTimeMillis() - m3u8Timestamp > timeout) {
       String url = M3U8_MD5_URL + System.currentTimeMillis();
-      HttpResponse resp =
-          HttpUtil.createGet(url)
-              .header("Accept", "*/*")
-              .header("Accept-Encoding", "gzip, deflate")
-              .header("Accept-Language", "zh-CN,zh;q=0.9")
-              .header("Host", "sjlivecdn.cbg.cn")
-              .header("Referer", "http://www.cbg.cn/zbpd/")
-              .header(
-                  "User-Agent",
-                  "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/72.0.3610.2 Safari/537.36")
-              .header("X-Requested-With", "ShockwaveFlash/32.0.0.101")
-              .execute();
+      HttpResponse resp = HttpUtil.createGet(url).addHeaders(LIVE_HEADER).disableCache().execute();
       if (resp.getStatus() != 200) {
-        return env.getProperty("cqtv3.m3u8", M3U8_URL);
+        LOG.warn("try to get m3u8 url failed -> {}", resp.body());
+        return env.getProperty("cqtv3.m3u8", "");
       }
       String content = resp.body();
       LOG.info("orignal m3u8 :{}", content);
@@ -224,24 +198,13 @@ public class ProxyController {
       m3u8Url = content;
       return content;
     } else {
-      return m3u8Url != null ? m3u8Url : env.getProperty("cqtv3.m3u8", M3U8_URL);
+      return m3u8Url != null ? m3u8Url : env.getProperty("cqtv3.m3u8", "");
     }
   }
 
   public byte[] getTsData(String url) {
     LOG.info("request for url:{}", url);
-    HttpResponse resp =
-        HttpUtil.createGet(url)
-            .header("Accept", "*/*")
-            .header("Accept-Encoding", "gzip, deflate")
-            .header("Accept-Language", "zh-CN,zh;q=0.9")
-            .header("Host", "sjlivecdn.cbg.cn")
-            .header("Referer", "http://www.cbg.cn/zbpd/")
-            .header(
-                "User-Agent",
-                "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/72.0.3610.2 Safari/537.36")
-            .header("X-Requested-With", "ShockwaveFlash/32.0.0.101")
-            .execute();
+    HttpResponse resp = HttpUtil.createGet(url).addHeaders(LIVE_HEADER).execute();
     if ("text/html".equalsIgnoreCase(resp.header("Content-Type")) || resp.getStatus() != 200) {
       LOG.warn("get ts data :{},return other status:{}", url, resp.getStatus());
       return null;
