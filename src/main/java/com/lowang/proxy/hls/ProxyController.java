@@ -2,11 +2,15 @@ package com.lowang.proxy.hls;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.Enumeration;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
@@ -15,6 +19,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.env.Environment;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Controller;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -22,6 +27,7 @@ import org.springframework.web.bind.annotation.ResponseBody;
 
 import cn.hutool.cache.Cache;
 import cn.hutool.cache.CacheUtil;
+import cn.hutool.core.collection.BoundedPriorityQueue;
 import cn.hutool.core.util.HexUtil;
 import cn.hutool.core.util.StrUtil;
 import cn.hutool.crypto.symmetric.AES;
@@ -42,12 +48,23 @@ public class ProxyController {
   private static final String M3U8_MD5_URL =
       "http://app.cbg.cn/?app=activity&controller=wwsp&action=hlive_md5&callback=jQuery&ch=%2Fapp_2%2F_definst_%2Fls_3.stream%2Fchunklist.m3u8&_=";
   private static final Cache<String, byte[]> LFU_CACHE = CacheUtil.newFIFOCache(30);
+  private static final Cache<String, Long> LFU_TS_CACHE = CacheUtil.newFIFOCache(30);
+  private static final BoundedPriorityQueue<String> QUEUE =
+      new BoundedPriorityQueue<>(
+          30,
+          new Comparator<String>() {
+            @Override
+            public int compare(String o1, String o2) {
+              return -o1.compareTo(o2);
+            }
+          });
   private static byte[] keyData = null;
   private String prefix;
   private long m3u8Timestamp = -1;
   private String m3u8Url = null;
   private long timeout = 1000 * 60 * 5;
   private static final Map<String, String> LIVE_HEADER;
+  private String m3u8Data = "";
   @Autowired private Environment env;
 
   static {
@@ -76,6 +93,17 @@ public class ProxyController {
     }
   }
 
+  public List<String> extractTsFile(String m3u8Content) {
+    List<String> list = new ArrayList<>();
+    Pattern p = Pattern.compile("media(.*)ts");
+    Matcher m = p.matcher(m3u8Content);
+    while (m.find()) {
+      String file = m.group();
+      list.add(file);
+    }
+    return list;
+  }
+
   public void cacheTsData(String content) {
     Pattern p = Pattern.compile("media(.*)ts");
     Matcher m = p.matcher(content);
@@ -87,7 +115,6 @@ public class ProxyController {
             (prefix != null ? prefix : env.getProperty("cqtv3.ts-prefix", "")) + file;
         byte[] data = getTsData(tsDataUrl);
         LFU_CACHE.put(file, data);
-
         LOG.info(
             "cache media file:{},file size:{}MB,cache size:{}",
             file,
@@ -118,6 +145,18 @@ public class ProxyController {
     String content = getM3u8Data();
     content = content.replaceAll("media", prefix.trim() + "media");
     content = content.replace("http://sjlivecdnx.cbg.cn/1ive/stream_3.php", "stream_3.php");
+    List<String> list = extractTsFile(content);
+    list = list.stream().filter((x) -> !LFU_TS_CACHE.containsKey(x)).collect(Collectors.toList());
+    if (!list.isEmpty()) {
+      QUEUE.addAll(list);
+      list.forEach(x -> LFU_TS_CACHE.put(x, System.currentTimeMillis()));
+    }
+    // content = content.replaceAll("media", "/cqtv3/media");
+    // content = content.replaceFirst("#EXT-X-KEY(.*)php\"\n", "");
+    // content = content.replaceFirst("#EXT-X-ALLOW-CACHE:NO\n", "");
+    // content = content.replaceFirst("EXT-X-TARGETDURATION:12", "EXT-X-TARGETDURATION:10");
+    list = new ArrayList<>();
+    for (int i = 0; i < 3; i++) {}
     // LOG.info("output :{}", content);
     return content;
   }
@@ -175,11 +214,32 @@ public class ProxyController {
   }
 
   public String getM3u8Data() {
+    if (StrUtil.isBlank(m3u8Data)) {
+      LOG.info("get m3u8 data miss cache");
+      final String m3u8Url = getMd5M3u8();
+      prefix = m3u8Url.substring(0, m3u8Url.lastIndexOf("/") + 1);
+      final String content =
+          HttpUtil.createGet(m3u8Url).addHeaders(LIVE_HEADER).disableCache().execute().body();
+      m3u8Data = content;
+      return content;
+    } else {
+      return m3u8Data;
+    }
+  }
+
+  public void getM3u8DataAuto() {
     final String m3u8Url = getMd5M3u8();
     prefix = m3u8Url.substring(0, m3u8Url.lastIndexOf("/") + 1);
-    final String content =
-        HttpUtil.createGet(m3u8Url).addHeaders(LIVE_HEADER).disableCache().execute().body();
-    return content;
+    HttpResponse resp =
+        HttpUtil.createGet(m3u8Url).addHeaders(LIVE_HEADER).disableCache().execute();
+    if (resp.getStatus() == 200) {
+      String content = resp.body();
+      m3u8Data = content;
+      LOG.info("getM3u8DataAuto success");
+    } else {
+      m3u8Data = "";
+      LOG.error("getM3u8DataAuto error -> {}", resp);
+    }
   }
 
   public String getMd5M3u8() {
@@ -202,6 +262,11 @@ public class ProxyController {
     }
   }
 
+  @Scheduled(fixedRate = 5000)
+  public void getMd5M3u8Auto() {
+    getM3u8DataAuto();
+  }
+
   public byte[] getTsData(String url) {
     LOG.info("request for url:{}", url);
     HttpResponse resp = HttpUtil.createGet(url).addHeaders(LIVE_HEADER).execute();
@@ -211,5 +276,22 @@ public class ProxyController {
     } else {
       return resp.bodyBytes();
     }
+  }
+
+  public static void main(String[] args) {
+    BoundedPriorityQueue<String> q =
+        new BoundedPriorityQueue<>(
+            2,
+            new Comparator<String>() {
+              @Override
+              public int compare(String o1, String o2) {
+                return -o1.compareTo(o2);
+              }
+            });
+    q.add("media-1.ts");
+    q.add("media-1.ts");
+    q.add("media-2.ts");
+    // q.add("media-3.ts");
+    System.out.println(q.poll());
   }
 }
