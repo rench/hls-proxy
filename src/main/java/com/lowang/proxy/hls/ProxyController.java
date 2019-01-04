@@ -265,6 +265,7 @@ public class ProxyController {
   @Scheduled(fixedRate = 5000)
   public void getMd5M3u8Auto() {
     getM3u8DataAuto();
+    cacheTsData(m3u8Data);
   }
 
   public byte[] getTsData(String url) {
