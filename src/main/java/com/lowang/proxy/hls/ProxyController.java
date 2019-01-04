@@ -62,9 +62,13 @@ public class ProxyController {
   private String prefix;
   private long m3u8Timestamp = -1;
   private String m3u8Url = null;
-  private long timeout = 1000 * 60 * 5;
+  private long refetchM3u8Timeout = 1000 * 60 * 10;
   private static final Map<String, String> LIVE_HEADER;
   private String m3u8Data = "";
+  private long m3u8LastAccess = System.currentTimeMillis();
+  private long tsLastAccess = System.currentTimeMillis();
+  private long cacheTsTimeout = 1000 * 60 * 1;
+  private long cacheM3u8Timeout = 1000 * 60 * 2;
   @Autowired private Environment env;
 
   static {
@@ -142,6 +146,7 @@ public class ProxyController {
   @ResponseBody
   @RequestMapping(value = "/ocqtv3.m3u8", produces = "application/vnd.apple.mpegurl")
   public String ocqtv3(HttpServletRequest request, HttpServletResponse response) {
+    m3u8LastAccess = System.currentTimeMillis();
     String content = getM3u8Data();
     content = content.replaceAll("media", prefix.trim() + "media");
     content = content.replace("http://sjlivecdnx.cbg.cn/1ive/stream_3.php", "stream_3.php");
@@ -164,6 +169,7 @@ public class ProxyController {
   @ResponseBody
   @RequestMapping(value = "/cqtv3.m3u8", produces = "application/vnd.apple.mpegurl")
   public String cqtv3(HttpServletRequest request, HttpServletResponse response) {
+    m3u8LastAccess = System.currentTimeMillis();
     String content = getM3u8Data();
     cacheTsData(content);
     content = content.replaceAll("media", "/cqtv3/media");
@@ -179,6 +185,7 @@ public class ProxyController {
       @PathVariable(name = "file") final String file,
       HttpServletRequest request,
       HttpServletResponse response) {
+    tsLastAccess = System.currentTimeMillis();
     LOG.info("request file:{}", file);
     String ivStr = file.substring(file.indexOf("_") + 1, file.indexOf(".ts"));
     ivStr = String.format("%032x", Integer.valueOf(ivStr));
@@ -237,13 +244,12 @@ public class ProxyController {
       m3u8Data = content;
       LOG.info("getM3u8DataAuto success");
     } else {
-      m3u8Data = "";
       LOG.error("getM3u8DataAuto error -> {}", resp);
     }
   }
 
   public String getMd5M3u8() {
-    if (m3u8Timestamp == -1 || System.currentTimeMillis() - m3u8Timestamp > timeout) {
+    if (m3u8Timestamp == -1 || System.currentTimeMillis() - m3u8Timestamp > refetchM3u8Timeout) {
       String url = M3U8_MD5_URL + System.currentTimeMillis();
       HttpResponse resp = HttpUtil.createGet(url).addHeaders(LIVE_HEADER).disableCache().execute();
       if (resp.getStatus() != 200) {
@@ -264,8 +270,12 @@ public class ProxyController {
 
   @Scheduled(fixedRate = 5000)
   public void getMd5M3u8Auto() {
-    getM3u8DataAuto();
-    cacheTsData(m3u8Data);
+    if (System.currentTimeMillis() - m3u8LastAccess < cacheM3u8Timeout) {
+      getM3u8DataAuto();
+    }
+    if (System.currentTimeMillis() - tsLastAccess < cacheTsTimeout) {
+      cacheTsData(m3u8Data);
+    }
   }
 
   public byte[] getTsData(String url) {
