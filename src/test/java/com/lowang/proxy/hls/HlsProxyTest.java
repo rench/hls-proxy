@@ -2,6 +2,7 @@ package com.lowang.proxy.hls;
 
 import java.io.InputStream;
 
+import cn.hutool.core.codec.Base64;
 import cn.hutool.core.io.FileUtil;
 import cn.hutool.core.util.HexUtil;
 import cn.hutool.crypto.symmetric.AES;
@@ -9,6 +10,12 @@ import cn.hutool.http.HttpUtil;
 
 public class HlsProxyTest {
   public static void main(String[] args) {
+
+    byte[] bb =
+        Base64.decode(
+            "AskbAgdLJd0PVO2NFxNn9USeKzR7tRnyncRC0nLJffnPyWNLQfvvoQXfdVxN/zJaD0uuig9+h/YF↵9kVNrFQ+YfPfVYYUHIDX7JlqiLrvSKG3VrKczl/x/9KmHZKl1QNlracBIIw6Lj4SNgHMWP8Wmj78↵G5owMlHdwwDPAiRLMLIEx1wc/zeUIu2ZERjDrzHbEKX8JvU/8p5wGSE/4OCChW389JBeWE7ahWr7↵qULs6ueftJoTzHwDbNR8kL5yjaMMQCYEeZtDd4rHcjGKKY12yUynD0H2teTaCL0d+JxgLyonIqZB↵pWmyCfn06uAfzzLc2KAeqxF7t4l8QCs3wlKAsRIxn/vkAPNMcuRIq19VvW8WK/ht6PCO3g==");
+    System.out.println(bb.length);
+
     final String aesDataUrl = "http://sjlivecdnx.cbg.cn/1ive/stream_3.php";
     byte[] bs =
         HttpUtil.createGet(aesDataUrl)
@@ -38,13 +45,15 @@ public class HlsProxyTest {
   }
 
   public static void main1(String[] args) {
-    getTs("http://sjlivecdn.cbg.cn/201812260830/36c905f96837dfc439679a1f84ddcccc/app_2/_definst_/ls_3.stream/media-uhyiqgc82_241437.ts");
+    getTs(
+        "http://sjlivecdn.cbg.cn/201812260830/36c905f96837dfc439679a1f84ddcccc/app_2/_definst_/ls_3.stream/media-uhyiqgc82_241437.ts");
   }
-  
+
   public static void getTs(String url) {
-    System.out.println(HttpUtil.createGet(url).header("Referer", "http://www.cbg.cn").execute().getStatus());
+    System.out.println(
+        HttpUtil.createGet(url).header("Referer", "http://www.cbg.cn").execute().getStatus());
   }
-  
+
   public static InputStream getTsData(String url) {
     return HttpUtil.createGet(url).header("Referer", "http://www.cbg.cn").execute().bodyStream();
   }
